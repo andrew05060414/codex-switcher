@@ -22,7 +22,7 @@ def parse_args() -> argparse.Namespace:
         description="Switch Codex provider config and repair chat visibility metadata."
     )
     parser.add_argument("--provider", required=True)
-    parser.add_argument("--model", required=True)
+    parser.add_argument("--model")
     parser.add_argument("--codex-root", type=Path, default=Path.home() / ".codex")
     parser.add_argument("--base-url")
     parser.add_argument("--wire-api", default="responses")
@@ -33,7 +33,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backup-only", action="store_true")
     parser.add_argument("--repair-only", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not args.repair_only and not args.model:
+        parser.error("--model is required unless --repair-only is set")
+    return args
 
 
 def read_current_provider(config_path: Path) -> str:
@@ -48,6 +51,133 @@ def read_current_provider(config_path: Path) -> str:
     return "openai"
 
 
+def toml_section_header(section: str) -> str:
+    parts = section.split(".")
+    if any(part and not (part[0].isalpha() or part[0] == "_") for part in parts):
+        return f'["{section}"]'
+    return f"[{section}]"
+
+
+def is_section_header(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("[") and stripped.endswith("]")
+
+
+def section_names_match(header: str, section: str) -> bool:
+    stripped = header.strip()
+    if stripped.startswith('["') and stripped.endswith('"]'):
+        return stripped[2:-2] == section
+    if stripped.startswith("[") and stripped.endswith("]"):
+        return stripped[1:-1] == section
+    return False
+
+
+def find_section_range(lines: list[str], section: str) -> tuple[int, int] | None:
+    start: int | None = None
+    for index, line in enumerate(lines):
+        if is_section_header(line) and section_names_match(line, section):
+            start = index
+            break
+    if start is None:
+        return None
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if is_section_header(lines[index]):
+            end = index
+            break
+    return start, end
+
+
+def first_section_index(lines: list[str]) -> int:
+    for index, line in enumerate(lines):
+        if is_section_header(line):
+            return index
+    return len(lines)
+
+
+def set_top_level_key(lines: list[str], key: str, rendered: str | None) -> list[str]:
+    prefix = f"{key} ="
+    updated = False
+    result: list[str] = []
+    for line in lines:
+        if not updated and line.strip().startswith(prefix):
+            if rendered is not None:
+                result.append(rendered)
+            updated = True
+            continue
+        result.append(line)
+    if rendered is None:
+        return result
+    if updated:
+        return result
+    insert_at = first_section_index(result)
+    result[insert_at:insert_at] = [rendered]
+    return result
+
+
+def provider_display_name(provider: str) -> str:
+    if provider == "9router":
+        return "9Router"
+    return provider
+
+
+def build_provider_section_lines(args: argparse.Namespace) -> list[str]:
+    section = f"model_providers.{args.provider}"
+    lines = [
+        toml_section_header(section),
+        f'name = "{provider_display_name(args.provider)}"',
+    ]
+    if args.base_url:
+        lines.append(f'base_url = "{args.base_url}"')
+    if args.wire_api:
+        lines.append(f'wire_api = "{args.wire_api}"')
+    if args.requires_openai_auth:
+        lines.append("requires_openai_auth = true")
+    return lines
+
+
+def build_subagent_section_lines(args: argparse.Namespace) -> list[str]:
+    if not args.subagent_model:
+        return []
+    return [
+        toml_section_header("agents.subagent"),
+        f'model = "{args.subagent_model}"',
+    ]
+
+
+def replace_section(lines: list[str], section: str, new_section_lines: list[str]) -> list[str]:
+    if not new_section_lines:
+        return lines
+    found = find_section_range(lines, section)
+    if found is None:
+        if lines and lines[-1].strip():
+            lines = [*lines, ""]
+        return [*lines, *new_section_lines]
+    start, end = found
+    return [*lines[:start], *new_section_lines, *lines[end:]]
+
+
+def patch_config_text(existing: str, args: argparse.Namespace) -> str:
+    lines = existing.splitlines()
+    lines = set_top_level_key(lines, "model", f'model = "{args.model}"')
+    lines = set_top_level_key(lines, "model_provider", f'model_provider = "{args.provider}"')
+    if args.reasoning_effort:
+        lines = set_top_level_key(
+            lines,
+            "model_reasoning_effort",
+            f'model_reasoning_effort = "{args.reasoning_effort}"',
+        )
+    if args.disable_response_storage:
+        lines = set_top_level_key(lines, "disable_response_storage", "disable_response_storage = true")
+    lines = replace_section(
+        lines,
+        f"model_providers.{args.provider}",
+        build_provider_section_lines(args),
+    )
+    lines = replace_section(lines, "agents.subagent", build_subagent_section_lines(args))
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def build_config_text(args: argparse.Namespace) -> str:
     lines: list[str] = [
         f'model = "{args.model}"',
@@ -58,18 +188,10 @@ def build_config_text(args: argparse.Namespace) -> str:
     if args.disable_response_storage:
         lines.append("disable_response_storage = true")
     lines.append("")
-    lines.append(f"[model_providers.{args.provider}]")
-    lines.append(f'name = "{args.provider}"')
-    if args.base_url:
-        lines.append(f'base_url = "{args.base_url}"')
-    if args.wire_api:
-        lines.append(f'wire_api = "{args.wire_api}"')
-    if args.requires_openai_auth:
-        lines.append("requires_openai_auth = true")
+    lines.extend(build_provider_section_lines(args))
     if args.subagent_model:
         lines.append("")
-        lines.append("[agents.subagent]")
-        lines.append(f'model = "{args.subagent_model}"')
+        lines.extend(build_subagent_section_lines(args))
     lines.append("")
     return "\n".join(lines)
 
@@ -196,10 +318,15 @@ def update_sqlite_provider(codex_root: Path, target_provider: str, dry_run: bool
         conn.close()
 
 
-def write_config(codex_root: Path, content: str, dry_run: bool) -> None:
+def write_config(codex_root: Path, args: argparse.Namespace, dry_run: bool) -> None:
     if dry_run:
         return
-    (codex_root / CONFIG_FILE_NAME).write_text(content, encoding="utf-8", newline="\n")
+    config_path = codex_root / CONFIG_FILE_NAME
+    if config_path.exists():
+        content = patch_config_text(config_path.read_text(encoding="utf-8"), args)
+    else:
+        content = build_config_text(args)
+    config_path.write_text(content, encoding="utf-8", newline="\n")
 
 
 def main() -> int:
@@ -238,7 +365,7 @@ def main() -> int:
         return 0
 
     if not args.repair_only:
-        write_config(codex_root, build_config_text(args), args.dry_run)
+        write_config(codex_root, args, args.dry_run)
 
     rollout_seen, rollout_changed, _ = rewrite_rollouts(
         codex_root, args.provider, dry_run=args.dry_run

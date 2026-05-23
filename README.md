@@ -66,7 +66,7 @@ bash ./run_codex_switcher.sh --provider ekti --model gpt-5.5 --reasoning-effort 
 ### 只修历史，不改 config.toml
 
 ```bash
-bash ./run_codex_switcher.sh --provider 9router --model gpt-5.4 --repair-only
+bash ./run_codex_switcher.sh --provider 9router --repair-only
 ```
 
 ## 设计原则

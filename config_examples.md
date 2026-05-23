@@ -22,16 +22,16 @@ base_url = "https://chat.ekti.cc/v1"
 目标配置等价于：
 
 ```toml
-model = "gpt-5.4"
+model = "cc-pro"
 model_provider = "9router"
 
-[model_providers.9router]
+["model_providers.9router"]
 name = "9Router"
 base_url = "http://127.0.0.1:20128/v1"
 wire_api = "responses"
 
 [agents.subagent]
-model = "oa/gpt-5.4"
+model = "cc-normal"
 ```
 
 ## 路径说明
