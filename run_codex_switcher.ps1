@@ -1,10 +1,7 @@
-$ErrorActionPreference = 'Stop'
-Set-StrictMode -Version Latest
-
 param(
-  [Parameter(Mandatory = $true)][string]$Provider,
-  [Parameter(Mandatory = $true)][string]$Model,
-  [string]$CodexRoot = "$HOME\.codex",
+  [string]$Provider,
+  [string]$Model,
+  [string]$CodexRoot = (Join-Path $HOME '.codex'),
   [string]$BaseUrl,
   [string]$WireApi = 'responses',
   [string]$ReasoningEffort,
@@ -13,18 +10,20 @@ param(
   [switch]$DisableResponseStorage,
   [switch]$BackupOnly,
   [switch]$RepairOnly,
+  [switch]$RepairSessionTimesOnly,
   [switch]$DryRun
 )
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $pythonScript = Join-Path $scriptDir 'codex_switcher.py'
 
-$argsList = @(
-  $pythonScript,
-  '--provider', $Provider,
-  '--model', $Model,
-  '--codex-root', $CodexRoot
-)
+$argsList = @($pythonScript, '--codex-root', $CodexRoot)
+
+if ($Provider) { $argsList += @('--provider', $Provider) }
+if ($Model) { $argsList += @('--model', $Model) }
 
 if ($BaseUrl) { $argsList += @('--base-url', $BaseUrl) }
 if ($WireApi) { $argsList += @('--wire-api', $WireApi) }
@@ -34,6 +33,7 @@ if ($RequiresOpenAIAuth) { $argsList += '--requires-openai-auth' }
 if ($DisableResponseStorage) { $argsList += '--disable-response-storage' }
 if ($BackupOnly) { $argsList += '--backup-only' }
 if ($RepairOnly) { $argsList += '--repair-only' }
+if ($RepairSessionTimesOnly) { $argsList += '--repair-session-times-only' }
 if ($DryRun) { $argsList += '--dry-run' }
 
 & python @argsList

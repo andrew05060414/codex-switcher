@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -21,7 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Switch Codex provider config and repair chat visibility metadata."
     )
-    parser.add_argument("--provider", required=True)
+    parser.add_argument("--provider")
     parser.add_argument("--model")
     parser.add_argument("--codex-root", type=Path, default=Path.home() / ".codex")
     parser.add_argument("--base-url")
@@ -32,8 +33,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--disable-response-storage", action="store_true")
     parser.add_argument("--backup-only", action="store_true")
     parser.add_argument("--repair-only", action="store_true")
+    parser.add_argument("--repair-session-times-only", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    if args.repair_session_times_only:
+        return args
+    if not args.provider:
+        parser.error("--provider is required unless --repair-session-times-only is set")
     if not args.repair_only and not args.model:
         parser.error("--model is required unless --repair-only is set")
     return args
@@ -270,7 +276,190 @@ def planned_backup_dir(codex_root: Path, target_provider: str) -> Path:
     return codex_root / f"backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}-provider-switch-{target_provider}"
 
 
-def rewrite_rollouts(codex_root: Path, target_provider: str, dry_run: bool) -> tuple[int, int, list[Path]]:
+SESSION_INDEX_TIME_KEYS = ("updated_at", "updatedAt", "last_updated_at", "lastUpdatedAt")
+ROLLOUT_TIME_KEYS = ("timestamp", "time", "created_at", "createdAt")
+
+
+def normalize_timestamp_seconds(value: int | float) -> int:
+    timestamp = int(value)
+    if timestamp > 10_000_000_000_000:
+        return timestamp // 1_000
+    if timestamp > 10_000_000_000:
+        return timestamp
+    return timestamp
+
+
+def parse_json_timestamp_seconds(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return normalize_timestamp_seconds(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.isdigit():
+            return normalize_timestamp_seconds(int(text))
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return int(parsed.timestamp())
+    return None
+
+
+def read_session_index_map(codex_root: Path) -> dict[str, dict]:
+    index_path = codex_root / SESSION_INDEX_FILE
+    if not index_path.exists():
+        return {}
+    entries: dict[str, dict] = {}
+    for line in index_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        session_id = parsed.get("id")
+        if isinstance(session_id, str) and session_id:
+            entries[session_id] = parsed
+    return entries
+
+
+def session_index_updated_at_seconds(entry: dict) -> int | None:
+    for key in SESSION_INDEX_TIME_KEYS:
+        if key in entry:
+            parsed = parse_json_timestamp_seconds(entry[key])
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def session_meta_id(parsed: dict) -> str | None:
+    payload = parsed.get("payload")
+    if isinstance(payload, dict):
+        for key in ("id", "session_id"):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                return value
+    for key in ("id", "session_id"):
+        value = parsed.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def rollout_line_timestamp_seconds(record: dict) -> int | None:
+    for key in ROLLOUT_TIME_KEYS:
+        parsed = parse_json_timestamp_seconds(record.get(key))
+        if parsed is not None:
+            return parsed
+    payload = record.get("payload")
+    if isinstance(payload, dict):
+        for key in ROLLOUT_TIME_KEYS:
+            parsed = parse_json_timestamp_seconds(payload.get(key))
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def rollout_file_activity_seconds(path: Path) -> int | None:
+    latest: int | None = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            record = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        parsed = rollout_line_timestamp_seconds(record)
+        if parsed is not None:
+            latest = parsed if latest is None else max(latest, parsed)
+    return latest
+
+
+def resolve_target_modified_seconds(
+    session_id: str | None,
+    session_index_map: dict[str, dict],
+    rollout_path: Path,
+    fallback_seconds: int | None,
+) -> int | None:
+    indexed: int | None = None
+    if session_id and session_id in session_index_map:
+        indexed = session_index_updated_at_seconds(session_index_map[session_id])
+    activity = rollout_file_activity_seconds(rollout_path)
+    if indexed is not None and activity is not None:
+        if abs(indexed - activity) > 3600:
+            return activity
+        return indexed
+    if indexed is not None:
+        return indexed
+    if activity is not None:
+        return activity
+    return fallback_seconds
+
+
+def read_modified_seconds(path: Path) -> int | None:
+    try:
+        return int(os.path.getmtime(path))
+    except OSError:
+        return None
+
+
+def restore_modified_seconds(path: Path, modified_seconds: int | None) -> None:
+    if modified_seconds is None:
+        return
+    os.utime(path, (modified_seconds, modified_seconds))
+
+
+def same_modified_seconds(left: int | None, right: int | None) -> bool:
+    return left == right
+
+
+def write_rollout_text(path: Path, text: str, target_modified_seconds: int | None) -> None:
+    original_modified = read_modified_seconds(path)
+    path.write_text(text, encoding="utf-8", newline="")
+    restore_modified_seconds(path, target_modified_seconds if target_modified_seconds is not None else original_modified)
+
+
+def restore_rollout_timestamps(
+    codex_root: Path,
+    session_index_map: dict[str, dict],
+    dry_run: bool,
+) -> tuple[int, int]:
+    seen = 0
+    restored = 0
+    for rollout in collect_rollouts(codex_root):
+        parsed_bundle = parse_first_line(rollout)
+        if parsed_bundle is None:
+            continue
+        parsed, _, _ = parsed_bundle
+        seen += 1
+        current_modified = read_modified_seconds(rollout)
+        target_modified = resolve_target_modified_seconds(
+            session_meta_id(parsed),
+            session_index_map,
+            rollout,
+            current_modified,
+        )
+        if target_modified is None or same_modified_seconds(current_modified, target_modified):
+            continue
+        restored += 1
+        if not dry_run:
+            restore_modified_seconds(rollout, target_modified)
+    return seen, restored
+
+
+def rewrite_rollouts(
+    codex_root: Path,
+    target_provider: str,
+    session_index_map: dict[str, dict],
+    dry_run: bool,
+) -> tuple[int, int, list[Path]]:
     seen = 0
     changed = 0
     changed_paths: list[Path] = []
@@ -281,17 +470,66 @@ def rewrite_rollouts(codex_root: Path, target_provider: str, dry_run: bool) -> t
         parsed, rest, newline = parsed_bundle
         seen += 1
         current_provider = str(parsed["payload"].get("model_provider") or "")
-        if current_provider == target_provider:
+        current_modified = read_modified_seconds(rollout)
+        target_modified = resolve_target_modified_seconds(
+            session_meta_id(parsed),
+            session_index_map,
+            rollout,
+            current_modified,
+        )
+        provider_matches = current_provider == target_provider
+        modified_matches = target_modified is None or same_modified_seconds(
+            current_modified, target_modified
+        )
+        if provider_matches and modified_matches:
             continue
         changed += 1
         changed_paths.append(rollout)
         if dry_run:
             continue
-        parsed["payload"]["model_provider"] = target_provider
-        new_first_line = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
-        new_text = new_first_line if newline == "" else new_first_line + newline + rest
-        rollout.write_text(new_text, encoding="utf-8", newline="")
+        if not provider_matches:
+            parsed["payload"]["model_provider"] = target_provider
+            new_first_line = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+            new_text = new_first_line if newline == "" else new_first_line + newline + rest
+            write_rollout_text(rollout, new_text, target_modified)
+        elif target_modified is not None:
+            restore_modified_seconds(rollout, target_modified)
     return seen, changed, changed_paths
+
+
+def repair_sqlite_thread_timestamps(codex_root: Path, dry_run: bool) -> int:
+    db_path = codex_root / STATE_DB_FILE
+    if not db_path.exists():
+        return 0
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.cursor()
+        rows = cur.execute(
+            "SELECT id, rollout_path, updated_at FROM threads WHERE rollout_path IS NOT NULL AND rollout_path <> ''"
+        ).fetchall()
+        updated = 0
+        for thread_id, rollout_path, updated_at in rows:
+            rollout = codex_root / rollout_path
+            if not rollout.exists():
+                continue
+            activity = rollout_file_activity_seconds(rollout)
+            if activity is None:
+                continue
+            current = int(updated_at or 0)
+            if abs(current - activity) <= 1:
+                continue
+            updated += 1
+            if dry_run:
+                continue
+            cur.execute(
+                "UPDATE threads SET updated_at = ?, updated_at_ms = ? WHERE id = ?",
+                (activity, activity * 1000, thread_id),
+            )
+        if not dry_run:
+            conn.commit()
+        return updated
+    finally:
+        conn.close()
 
 
 def update_sqlite_provider(codex_root: Path, target_provider: str, dry_run: bool) -> int:
@@ -335,10 +573,32 @@ def main() -> int:
     if not codex_root.exists():
         raise SystemExit(f"Missing Codex root: {codex_root}")
 
+    session_index_map = read_session_index_map(codex_root)
+
+    if args.repair_session_times_only:
+        rollout_seen, rollout_mtime_restored = restore_rollout_timestamps(
+            codex_root, session_index_map, dry_run=args.dry_run
+        )
+        sqlite_timestamps_updated = repair_sqlite_thread_timestamps(codex_root, dry_run=args.dry_run)
+        print(
+            json.dumps(
+                {
+                    "codex_root": str(codex_root),
+                    "rollout_seen": rollout_seen,
+                    "rollout_mtime_restored": rollout_mtime_restored,
+                    "sqlite_timestamps_updated": sqlite_timestamps_updated,
+                    "dry_run": args.dry_run,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+
     config_path = codex_root / CONFIG_FILE_NAME
     current_provider = read_current_provider(config_path)
     rollout_seen, rollout_changed, rollout_paths = rewrite_rollouts(
-        codex_root, args.provider, dry_run=True
+        codex_root, args.provider, session_index_map, dry_run=True
     )
     backup_dir: Path | None = None
 
@@ -368,9 +628,13 @@ def main() -> int:
         write_config(codex_root, args, args.dry_run)
 
     rollout_seen, rollout_changed, _ = rewrite_rollouts(
-        codex_root, args.provider, dry_run=args.dry_run
+        codex_root, args.provider, session_index_map, dry_run=args.dry_run
+    )
+    rollout_mtime_restored_seen, rollout_mtime_restored = restore_rollout_timestamps(
+        codex_root, session_index_map, dry_run=args.dry_run
     )
     sqlite_updated = update_sqlite_provider(codex_root, args.provider, dry_run=args.dry_run)
+    sqlite_timestamps_updated = repair_sqlite_thread_timestamps(codex_root, dry_run=args.dry_run)
 
     print(
         json.dumps(
@@ -381,7 +645,10 @@ def main() -> int:
                 "backup_dir": str(backup_dir) if backup_dir else None,
                 "rollout_seen": rollout_seen,
                 "rollout_changed": rollout_changed,
+                "rollout_mtime_restored_seen": rollout_mtime_restored_seen,
+                "rollout_mtime_restored": rollout_mtime_restored,
                 "sqlite_updated": sqlite_updated,
+                "sqlite_timestamps_updated": sqlite_timestamps_updated,
                 "dry_run": args.dry_run,
             },
             ensure_ascii=False,
