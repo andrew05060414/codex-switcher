@@ -24,6 +24,10 @@
   给 AI 的固定操作指令模板。把这个文件给下一个 AI，它就能按统一流程做。
 - `config_examples.md`
   常见 provider 配置示例。
+- `9router_codex_aliases.md`
+  Codex App 裸模型名与 9Router combo/alias 对齐说明。
+- `sync_9router_codex_aliases.py`
+  一键镜像 `gpt-5.x` combo 或修复 ekti alias。
 
 ## 推荐用法
 
@@ -68,6 +72,21 @@ bash ./run_codex_switcher.sh --provider ekti --model gpt-5.5 --reasoning-effort 
 ```bash
 bash ./run_codex_switcher.sh --provider 9router --repair-only
 ```
+
+## 9Router：Codex App 内切 GPT-5.4 / GPT-5.5
+
+App 选模型会直接改 `config.toml` 里的裸名（`gpt-5.5`），与 9Router picker 里的 `oa-gpt-5.5` 不是同一套 key。若出现 404，见 [`9router_codex_aliases.md`](9router_codex_aliases.md)。
+
+```bash
+# 查看 ~/.9router 里 combo / alias 状态
+python3 sync_9router_codex_aliases.py --list
+
+# 推荐：把 gpt-5.5 / gpt-5.4 镜像成 cc-pro / cc-normal 同链路（完整 fallback）
+python3 sync_9router_codex_aliases.py --mirror-combos --dry-run
+python3 sync_9router_codex_aliases.py --mirror-combos
+```
+
+改完 `cc-pro` 等源 combo 后，再跑一遍 `--mirror-combos` 即可同步到 `gpt-5.x`。
 
 ## 设计原则
 

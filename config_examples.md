@@ -34,6 +34,17 @@ wire_api = "responses"
 model = "cc-normal"
 ```
 
+### Codex App 内切 GPT-5.4 / GPT-5.5
+
+App 会直接改 `model = "gpt-5.4"` 等裸名。若 404，见 [`9router_codex_aliases.md`](9router_codex_aliases.md)：
+
+```bash
+python3 sync_9router_codex_aliases.py --mirror-combos --dry-run
+python3 sync_9router_codex_aliases.py --mirror-combos
+```
+
+镜像关系：`gpt-5.5` ← `cc-pro`，`gpt-5.4` ← `cc-normal`，`gpt-5.4-mini` ← `cc-lite`。
+
 ## 路径说明
 
 - Windows 默认 Codex 根目录：`C:\Users\<用户名>\.codex`
