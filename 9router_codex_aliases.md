@@ -57,27 +57,31 @@ App **不会**写 `oa/gpt-5.5` 或 `cc-pro`。
 
 | | Combo 镜像 `--mirror-combos` | Endpoint alias `--fix-aliases` | Dashboard Console |
 |--|------------------------------|--------------------------------|-------------------|
-| **机制** | 新建 `gpt-5.x` combo，复制 `cc-*` 链路 | 写 `modelAliases` KV | `PUT /api/models/alias` |
+| **机制** | 新建/更新 `gpt-5.x` combo，写入 **oa-first** 链路 | 写 `modelAliases` KV | `PUT /api/models/alias` |
 | **Fallback** | ✅ 完整 combo 链 | ❌ 单跳 ekti | ❌ 单跳 |
 | **Codex App 裸名** | ✅ | ✅ | ✅ |
+| **Codex `apply_patch`** | ✅（oa 首跳） | ✅ | ✅ |
 | **自动化** | ✅ CLI 脚本 | ✅ CLI 脚本 | 手动 |
-| **改 cc-pro 后同步** | 再跑 `--mirror-combos` | 无关 | 手动 |
 
-**推荐：** 已有 `cc-pro` / `cc-normal` / `cc-lite` combo 时，用 **Combo 镜像**。
+**推荐：** Codex 主会话用 **`--mirror-combos`（默认 oa-first）**。`cc-*` combo 留给 subagent / Claude Code；**不要**对 Codex 裸名用 `--from-cc-combos`（Claude 首跳会破坏 `apply_patch`）。
+
+当前已验证可用的 oa-first 配置见下方「默认 combo 链路」。9Router 侧对 Codex `custom_tool_call` 的翻译问题见 [9router#1371](https://github.com/decolua/9router/issues/1371)（oa-first 路径下已可用）。
 
 ---
 
-## 默认镜像关系
+## 默认 combo 链路
 
-脚本 `DEFAULT_COMBO_MIRROR`（可在 `sync_9router_codex_aliases.py` 里改）：
+脚本 `DEFAULT_CODEX_COMBO_CHAINS`（可在 `sync_9router_codex_aliases.py` 里改）：
 
-| Codex App 裸名 | 复制自 combo | 典型链路 |
-|---------------|--------------|----------|
-| `gpt-5.5` | `cc-pro` | `cc/claude-opus-4-7` → `oa/gpt-5.5` → `ds/deepseek-v4-pro` |
-| `gpt-5.4` | `cc-normal` | `cc/claude-sonnet-4-6` → `oa/gpt-5.4` → `ds/deepseek-v4-flash` |
-| `gpt-5.4-mini` | `cc-lite` | `cc/claude-haiku-4-5` → `oa/gpt-5.4-mini` → `cx/gpt-5.4-mini` → `ds/deepseek-v4-flash` |
+| Codex App 裸名 | 典型链路 |
+|---------------|----------|
+| `gpt-5.5` | `oa/gpt-5.5` → `ds/deepseek-v4-pro-max` |
+| `gpt-5.4` | `oa/gpt-5.4` → `ds/deepseek-v4-pro` |
+| `gpt-5.4-mini` | `oa/gpt-5.4-mini` → `cx/gpt-5.4-mini` → `ds/deepseek-v4-flash` |
 
-说明：`cc-normal` 是 sonnet 档；`cc-lite` 是 haiku/mini 档，不要和名字上的 "lite" 混淆。
+**为什么 oa 首跳：** Codex 的 `apply_patch` 是 Responses API `custom_tool_call`。combo 第一跳若是 `cc/*`（Claude），工具回传格式不兼容。`oa/*` 首跳 + 当前 9Router 版本下，`apply_patch` 已可正常工作。
+
+旧行为（复制 `cc-pro` 链路）仍可用 `--mirror-combos --from-cc-combos`，**仅**适合非 Codex 场景。
 
 ---
 
@@ -87,8 +91,8 @@ App **不会**写 `oa/gpt-5.5` 或 `cc-pro`。
 
 - 9Router 在运行或已停止均可（脚本直接写 SQLite）
 - 默认数据库：`~/.9router/db/data.sqlite`
-- 已存在源 combo：`cc-pro`、`cc-normal`（及可选 `cc-lite`）
-- ekti compatible endpoint 已导入模型（alias 方案需要）
+- ekti / oa / ds 等 provider 已在 9Router 配好（与默认链路一致）
+- ekti compatible endpoint 已导入模型（`--fix-aliases` 方案需要）
 
 ### 命令
 
@@ -101,8 +105,11 @@ python3 sync_9router_codex_aliases.py --list
 # 预览 combo 镜像（不写盘）
 python3 sync_9router_codex_aliases.py --mirror-combos --dry-run
 
-# 写入 combo 镜像（创建或更新 gpt-5.x combo）
+# 写入 oa-first combo（Codex 默认）
 python3 sync_9router_codex_aliases.py --mirror-combos
+
+# 旧：从 cc-pro/cc-normal 复制（会破坏 Codex apply_patch）
+python3 sync_9router_codex_aliases.py --mirror-combos --from-cc-combos --dry-run
 
 # 仅修 ekti 单跳 alias（无 combo fallback）
 python3 sync_9router_codex_aliases.py --fix-aliases --dry-run
@@ -121,7 +128,7 @@ python3 sync_9router_codex_aliases.py --db ~/.9router/db/data.sqlite --list
 | `alias_fix[].target` | `openai-compatible-chat-<uuid>/gpt-5.5` 形式 |
 | `state.ekti_prefix` | 检测到的 ekti storage provider id |
 
-`skipped` 通常表示源 combo 不存在，需先在 9Router Dashboard 建好 `cc-pro` 等。
+`skipped` 通常表示目标 combo 的 model 链为空；`--from-cc-combos` 时则表示缺少 `cc-pro` 等源 combo。
 
 ---
 
@@ -131,9 +138,12 @@ python3 sync_9router_codex_aliases.py --db ~/.9router/db/data.sqlite --list
 
 ### `--mirror-combos`
 
-1. `SELECT * FROM combos WHERE name = 'cc-pro'`（等）
-2. 读取 `models` JSON 数组
-3. `INSERT` 或 `UPDATE` `combos` 表，名称为 `gpt-5.5` 等
+默认（oa-first）：
+
+1. 读取 `DEFAULT_CODEX_COMBO_CHAINS`
+2. `INSERT` 或 `UPDATE` `combos` 表，名称为 `gpt-5.5` 等
+
+加 `--from-cc-combos` 时改为从 `cc-pro` / `cc-normal` / `cc-lite` 复制 `models` 数组。
 
 Combo 与 alias **同名不冲突**（不同表）。请求时 **combo 优先于 alias**，因此即使 KV 里仍有旧的 `gpt-5.5 → openai/...`，combo 镜像后也会走 combo 链。
 
@@ -142,15 +152,11 @@ Combo 与 alias **同名不冲突**（不同表）。请求时 **combo 优先于
 1. 从 `kv`（`scope=modelAliases`）或 `providerNodes` 检测 `openai-compatible-chat-*` 前缀
 2. `UPSERT` alias：`gpt-5.5` → `{prefix}/gpt-5.5`
 
-### 改 cc-pro 链路之后
+### 改默认 oa-first 链路之后
 
-在 Dashboard 调整了 `cc-pro` 的模型顺序或成员后，再执行：
+编辑 `sync_9router_codex_aliases.py` 里的 `DEFAULT_CODEX_COMBO_CHAINS`，再跑 `--mirror-combos`。
 
-```bash
-python3 sync_9router_codex_aliases.py --mirror-combos
-```
-
-会把最新 `cc-pro` 链同步到 `gpt-5.5` combo（`updated`）。
+若你仍用 `--from-cc-combos`，改完 `cc-pro` 等源 combo 后再 sync 即可。
 
 ---
 
@@ -162,7 +168,7 @@ python3 sync_9router_codex_aliases.py --mirror-combos
 python3 sync_9router_codex_aliases.py --list
 ```
 
-应看到 `combos.gpt-5.5` 与 `combos.cc-pro` 的 `models` 数组相同。
+应看到 `combos.gpt-5.5` 等为 oa-first 链路（不以 `cc/` 开头）。
 
 ### 2. 打 9Router API
 
@@ -178,8 +184,9 @@ curl -sS -X POST http://127.0.0.1:20128/v1/responses \
 ### 3. Codex App
 
 1. `model_provider = "9router"`，`base_url = "http://127.0.0.1:20128/v1"`
-2. App 内切到 GPT-5.5
+2. App 内切到 GPT-5.5（或 GPT-5.4）
 3. 发一条消息，应正常回复
+4. 让 agent 用 `apply_patch` 改一个小文件；rollout 里应出现 `custom_tool_call` 且 `input` 含 `*** Begin Patch`
 
 ---
 
@@ -211,7 +218,7 @@ alias 只能指向 `provider/model` 字符串，**不能**指向 combo 名。
 Combo 镜像完成后：
 
 ```toml
-model = "gpt-5.4"          # 或在 App 里切到 gpt-5.5
+model = "gpt-5.5"          # App 内可切 gpt-5.4 / gpt-5.4-mini
 model_provider = "9router"
 
 ["model_providers.9router"]
@@ -220,10 +227,10 @@ base_url = "http://127.0.0.1:20128/v1"
 wire_api = "responses"
 
 [agents.subagent]
-model = "cc-normal"        # subagent 策略，可与主模型不同
+model = "cc-normal"        # subagent 走 Claude combo，与主模型分离
 ```
 
-手动写 combo 名（App 显示「自定义」，路由相同）：
+手动写 Claude combo 名（App 显示「自定义」，仅适合非裸名场景）：
 
 ```toml
 model = "cc-pro"
@@ -247,10 +254,10 @@ App 内切 GPT-5.5 404 → 用本文 / sync 脚本。
 
 | 症状 | 检查 | 处理 |
 |------|------|------|
-| `--mirror-combos` 全部 skipped | `--list` 是否有 `cc-pro` | Dashboard 先建源 combo |
+| `--mirror-combos` 全部 skipped | `--list` 看 `DEFAULT_CODEX_COMBO_CHAINS` 是否为空 | 编辑脚本默认链路或 Dashboard 手动建 combo |
 | 仍 404 openai | `--list` 是否有 `combos.gpt-5.5` | 重跑 `--mirror-combos`；确认 9Router 读同一 DB |
-| App 显示自定义但能用 | model 是 `cc-pro` 等 | 正常；要显示 GPT-5.5 用裸名 + combo 镜像 |
-| 改了 cc-pro 但 gpt-5.5 未变 | 未再 sync | `--mirror-combos` |
+| `apply_patch` 空 `{}` / agent 用 heredoc | combo 是否 cc-first；rollout 是否 `toolu_*` | 跑 `--mirror-combos`（oa-first）；勿 `--from-cc-combos` |
+| App 显示自定义但能用 | model 是 `cc-pro` 等 | 正常；要显示 GPT-5.5 用裸名 + oa-first combo |
 | `--fix-aliases` 报错 no prefix | 未导入 ekti 模型 | Dashboard 先 Add/Import 模型 |
 
 ---
@@ -260,10 +267,10 @@ App 内切 GPT-5.5 404 → 用本文 / sync 脚本。
 编辑 `sync_9router_codex_aliases.py`：
 
 ```python
-DEFAULT_COMBO_MIRROR = {
-    "gpt-5.5": "cc-pro",
-    "gpt-5.4": "cc-normal",
-    "gpt-5.4-mini": "cc-lite",
+DEFAULT_CODEX_COMBO_CHAINS = {
+    "gpt-5.5": ["oa/gpt-5.5", "ds/deepseek-v4-pro-max"],
+    "gpt-5.4": ["oa/gpt-5.4", "ds/deepseek-v4-pro"],
+    "gpt-5.4-mini": ["oa/gpt-5.4-mini", "cx/gpt-5.4-mini", "ds/deepseek-v4-flash"],
 }
 
 DEFAULT_ALIAS_MODELS = {

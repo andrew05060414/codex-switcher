@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Sync 9Router combo/alias mappings so Codex App bare model names work."""
+"""Sync 9Router combo/alias mappings so Codex App bare model names work.
+
+Default `--mirror-combos` writes oa-first chains so Codex Desktop keeps
+`custom_tool_call` / `apply_patch` working through 9Router /v1/responses.
+Use `--from-cc-combos` only for non-Codex Claude-first routing.
+"""
 
 from __future__ import annotations
 
@@ -14,8 +19,15 @@ from pathlib import Path
 DEFAULT_DB = Path.home() / ".9router" / "db" / "data.sqlite"
 ALIAS_SCOPE = "modelAliases"
 
-# Codex App bare name -> source combo to copy model chain from
-DEFAULT_COMBO_MIRROR = {
+# Codex App bare name -> oa-first combo chain (preserves apply_patch / custom_tool_call).
+DEFAULT_CODEX_COMBO_CHAINS: dict[str, list[str]] = {
+    "gpt-5.5": ["oa/gpt-5.5", "ds/deepseek-v4-pro-max"],
+    "gpt-5.4": ["oa/gpt-5.4", "ds/deepseek-v4-pro"],
+    "gpt-5.4-mini": ["oa/gpt-5.4-mini", "cx/gpt-5.4-mini", "ds/deepseek-v4-flash"],
+}
+
+# Legacy: copy cc-* combo chains (Claude first hop — breaks Codex apply_patch).
+LEGACY_CC_COMBO_MIRROR: dict[str, str] = {
     "gpt-5.5": "cc-pro",
     "gpt-5.4": "cc-normal",
     "gpt-5.4-mini": "cc-lite",
@@ -35,7 +47,16 @@ def parse_args() -> argparse.Namespace:
         description="Mirror 9Router combos/aliases for Codex App model picker bare names."
     )
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
-    parser.add_argument("--mirror-combos", action="store_true", help="Create/update gpt-5.x combos from cc-* combos")
+    parser.add_argument(
+        "--mirror-combos",
+        action="store_true",
+        help="Create/update gpt-5.x combos with oa-first chains (Codex-safe default)",
+    )
+    parser.add_argument(
+        "--from-cc-combos",
+        action="store_true",
+        help="With --mirror-combos, copy cc-pro/cc-normal/cc-lite instead (legacy; breaks apply_patch)",
+    )
     parser.add_argument("--fix-aliases", action="store_true", help="Point bare names at ekti compatible endpoint models")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--list", action="store_true", help="Show current combos and relevant aliases")
@@ -145,7 +166,42 @@ def upsert_alias(
     return "updated" if current else "created"
 
 
-def mirror_combos(conn: sqlite3.Connection, mapping: dict[str, str], dry_run: bool) -> list[dict]:
+def sync_combo_chains(
+    conn: sqlite3.Connection,
+    chains: dict[str, list[str]],
+    *,
+    dry_run: bool,
+    source_label: str,
+) -> list[dict]:
+    results: list[dict] = []
+    for target_name, models in chains.items():
+        if not models:
+            results.append(
+                {
+                    "target": target_name,
+                    "source": source_label,
+                    "action": "skipped",
+                    "reason": "empty model chain",
+                }
+            )
+            continue
+        action = upsert_combo(conn, target_name, models, dry_run=dry_run)
+        results.append(
+            {
+                "target": target_name,
+                "source": source_label,
+                "action": action,
+                "models": models,
+            }
+        )
+    return results
+
+
+def mirror_from_cc_combos(
+    conn: sqlite3.Connection,
+    mapping: dict[str, str],
+    dry_run: bool,
+) -> list[dict]:
     results: list[dict] = []
     for target_name, source_name in mapping.items():
         source = get_combo(conn, source_name)
@@ -212,7 +268,19 @@ def main() -> int:
             output["state"] = list_state(conn)
 
         if args.mirror_combos:
-            output["combo_mirror"] = mirror_combos(conn, DEFAULT_COMBO_MIRROR, args.dry_run)
+            if args.from_cc_combos:
+                output["combo_mirror"] = mirror_from_cc_combos(
+                    conn, LEGACY_CC_COMBO_MIRROR, args.dry_run
+                )
+                output["combo_mirror_mode"] = "from-cc-combos"
+            else:
+                output["combo_mirror"] = sync_combo_chains(
+                    conn,
+                    DEFAULT_CODEX_COMBO_CHAINS,
+                    dry_run=args.dry_run,
+                    source_label="codex-oa-first",
+                )
+                output["combo_mirror_mode"] = "codex-oa-first"
 
         if args.fix_aliases:
             output["alias_fix"] = fix_aliases(conn, DEFAULT_ALIAS_MODELS, args.dry_run)

@@ -33,13 +33,23 @@
 
 先彻底关闭 Codex，再执行。
 
+### 正式切到 9router（推荐）
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_codex_switcher.ps1 -Provider 9router -Model gpt-5.5 -BaseUrl http://127.0.0.1:20128/v1 -WireApi responses -SubagentModel cc-normal
+```
+
+```bash
+bash ./run_codex_switcher.sh --provider 9router --model gpt-5.5 --base-url http://127.0.0.1:20128/v1 --wire-api responses --subagent-model cc-normal
+```
+
 ### 只看会改什么
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\run_codex_switcher.ps1 -Provider ekti -Model gpt-5.5 -ReasoningEffort xhigh -DisableResponseStorage -BaseUrl https://chat.ekti.cc/v1 -WireApi responses -RequiresOpenAIAuth -DryRun
+powershell -ExecutionPolicy Bypass -File .\run_codex_switcher.ps1 -Provider 9router -Model gpt-5.5 -BaseUrl http://127.0.0.1:20128/v1 -WireApi responses -SubagentModel cc-normal -DryRun
 ```
 
-### 正式切到 ekti
+### 正式切到 ekti（直连备选）
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_codex_switcher.ps1 -Provider ekti -Model gpt-5.5 -ReasoningEffort xhigh -DisableResponseStorage -BaseUrl https://chat.ekti.cc/v1 -WireApi responses -RequiresOpenAIAuth
@@ -48,20 +58,26 @@ powershell -ExecutionPolicy Bypass -File .\run_codex_switcher.ps1 -Provider ekti
 ### 只修历史，不改 config.toml
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\run_codex_switcher.ps1 -Provider 9router -Model gpt-5.4 -RepairOnly
+powershell -ExecutionPolicy Bypass -File .\run_codex_switcher.ps1 -Provider 9router -RepairOnly
 ```
 
 ## macOS 用法
 
 先彻底关闭 Codex，再执行。
 
+### 正式切到 9router（推荐）
+
+```bash
+bash ./run_codex_switcher.sh --provider 9router --model gpt-5.5 --base-url http://127.0.0.1:20128/v1 --wire-api responses --subagent-model cc-normal
+```
+
 ### 只看会改什么
 
 ```bash
-bash ./run_codex_switcher.sh --provider ekti --model gpt-5.5 --reasoning-effort xhigh --disable-response-storage --base-url https://chat.ekti.cc/v1 --wire-api responses --requires-openai-auth --dry-run
+bash ./run_codex_switcher.sh --provider 9router --model gpt-5.5 --base-url http://127.0.0.1:20128/v1 --wire-api responses --subagent-model cc-normal --dry-run
 ```
 
-### 正式切到 ekti
+### 正式切到 ekti（直连备选）
 
 ```bash
 bash ./run_codex_switcher.sh --provider ekti --model gpt-5.5 --reasoning-effort xhigh --disable-response-storage --base-url https://chat.ekti.cc/v1 --wire-api responses --requires-openai-auth
@@ -75,18 +91,18 @@ bash ./run_codex_switcher.sh --provider 9router --repair-only
 
 ## 9Router：Codex App 内切 GPT-5.4 / GPT-5.5
 
-App 选模型会直接改 `config.toml` 里的裸名（`gpt-5.5`），与 9Router picker 里的 `oa-gpt-5.5` 不是同一套 key。若出现 404，见 [`9router_codex_aliases.md`](9router_codex_aliases.md)。
+App 选模型会直接改 `config.toml` 里的裸名（`gpt-5.5`）。配合 **oa-first combo**，聊天与 `apply_patch` 均可正常工作。详见 [`9router_codex_aliases.md`](9router_codex_aliases.md)。
 
 ```bash
 # 查看 ~/.9router 里 combo / alias 状态
 python3 sync_9router_codex_aliases.py --list
 
-# 推荐：把 gpt-5.5 / gpt-5.4 镜像成 cc-pro / cc-normal 同链路（完整 fallback）
+# 写入/同步 oa-first gpt-5.x combo
 python3 sync_9router_codex_aliases.py --mirror-combos --dry-run
 python3 sync_9router_codex_aliases.py --mirror-combos
 ```
 
-改完 `cc-pro` 等源 combo 后，再跑一遍 `--mirror-combos` 即可同步到 `gpt-5.x`。
+改默认链路：编辑 `sync_9router_codex_aliases.py` 里的 `DEFAULT_CODEX_COMBO_CHAINS`，再跑 `--mirror-combos`。
 
 ## 设计原则
 

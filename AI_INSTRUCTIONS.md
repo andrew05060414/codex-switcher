@@ -3,7 +3,7 @@
 如果用户提到下面这些现象，优先使用本工具：
 
 - 切换 Codex provider 后历史对话消失
-- 想从 `9router` 切到 `ekti`
+- 想从 `ekti` 切到 `9router`（或反向）
 - 想保留历史聊天，同时切换 API/provider
 - 想一键修复 `.codex` 下的 provider 元数据
 - Codex App 里切 `gpt-5.4` / `gpt-5.5` 报 404 或路由不对
@@ -14,22 +14,24 @@
 
 ### 何时用
 
-- Codex App 切 GPT-5.5 / GPT-5.4 报 404（常见：`No active credentials for provider: openai`）
-- 已有 `cc-pro` / `cc-normal` combo，希望 App 裸名走同一条 fallback 链
+- 新装 / 重装 9Router 后，Codex 裸名 404
+- App 内切 GPT-5.5 / GPT-5.4 报 `No active credentials for provider: openai`
+- 需要把 Dashboard 里的 oa-first combo 同步进 SQLite
 
 ### 标准工作流
 
-1. `python3 sync_9router_codex_aliases.py --list` — 确认源 combo 存在。
-2. `python3 sync_9router_codex_aliases.py --mirror-combos --dry-run` — 看会 create/update 哪些 `gpt-5.x` combo。
+1. `python3 sync_9router_codex_aliases.py --list` — 确认 `gpt-5.x` combo 为 oa-first。
+2. `python3 sync_9router_codex_aliases.py --mirror-combos --dry-run` — 预览写入的链路。
 3. `python3 sync_9router_codex_aliases.py --mirror-combos` — 写入 `~/.9router/db/data.sqlite`。
 4. 可选验证：`curl -X POST http://127.0.0.1:20128/v1/responses -d '{"model":"gpt-5.5","input":"hi","max_output_tokens":5}'`
-5. Codex App 内再切模型测试。
+5. Codex App 内切模型并试 `apply_patch` 改文件。
 
 ### 方案选择
 
-- **推荐 `--mirror-combos`：** 裸名 → combo，与 `cc-pro` 等同链路。
+- **推荐 `--mirror-combos`（默认 oa-first）：** 裸名 → combo；Codex 聊天 + `apply_patch` 均可用。
+- **勿用 `--mirror-combos --from-cc-combos` 给 Codex 主模型：** Claude 首跳会破坏 `apply_patch`。
 - **备选 `--fix-aliases`：** 裸名 → ekti 单跳，无 combo fallback。
-- **备选 Dashboard Console：** 同 `--fix-aliases`，手动 PUT `/api/models/alias`。
+- **备选 ekti 直连：** 见下方 ekti 命令；需有效 API key。
 
 ### 与 codex_switcher 分工
 
@@ -60,25 +62,30 @@
 - 不要跳过备份
 - 不要在 Codex 正在运行时改写 `state_5.sqlite`
 - 不要手动混用多套零散命令，优先走统一脚本
+- 不要对 Codex 主模型跑 `--mirror-combos --from-cc-combos`
 
-## ekti 推荐命令
+## 9router 推荐命令（默认）
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_codex_switcher.ps1 -Provider 9router -Model gpt-5.5 -BaseUrl http://127.0.0.1:20128/v1 -WireApi responses -SubagentModel cc-normal
+```
+
+```bash
+bash ./run_codex_switcher.sh --provider 9router --model gpt-5.5 --base-url http://127.0.0.1:20128/v1 --wire-api responses --subagent-model cc-normal
+```
+
+只修历史、不改 config：
+
+```bash
+bash ./run_codex_switcher.sh --provider 9router --repair-only
+```
+
+## ekti 推荐命令（直连备选）
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_codex_switcher.ps1 -Provider ekti -Model gpt-5.5 -ReasoningEffort xhigh -DisableResponseStorage -BaseUrl https://chat.ekti.cc/v1 -WireApi responses -RequiresOpenAIAuth
 ```
 
-## 9router 推荐命令
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_codex_switcher.ps1 -Provider 9router -Model gpt-5.4 -BaseUrl http://127.0.0.1:20128/v1 -WireApi responses -SubagentModel oa/gpt-5.4
-```
-
-## macOS 推荐命令
-
 ```bash
 bash ./run_codex_switcher.sh --provider ekti --model gpt-5.5 --reasoning-effort xhigh --disable-response-storage --base-url https://chat.ekti.cc/v1 --wire-api responses --requires-openai-auth
-```
-
-```bash
-bash ./run_codex_switcher.sh --provider 9router --model gpt-5.4 --base-url http://127.0.0.1:20128/v1 --wire-api responses --subagent-model oa/gpt-5.4
 ```
